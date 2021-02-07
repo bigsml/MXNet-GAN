@@ -12,12 +12,14 @@ from mxnet.gluon import nn, utils
 from mxnet import autograd
 import numpy as np
 
+from gan_utils import *
 
-epochs = 2 # Set low by default for tests, set higher when you actually run this code.
+
+epochs = 20 # Set low by default for tests, set higher when you actually run this code.
 batch_size = 64
 latent_z_size = 100
 
-use_gpu = True
+use_gpu = True and mx.context.num_gpus() > 0
 ctx = mx.gpu() if use_gpu else mx.cpu()
 
 lr = 0.0002
@@ -39,7 +41,7 @@ img_list = []
 
 def transform(data, target_wd, target_ht):
     # resize to target_wd * target_ht
-    data = mx.image.imresize(data, target_wd, target_ht)
+    data = mx.image.imresize(data, target_wd, target_ht, interp = 1)
     # transpose from (target_wd, target_ht, 3)
     # to (3, target_wd, target_ht)
     data = nd.transpose(data, (2,0,1))
@@ -61,14 +63,11 @@ for path, _, fnames in os.walk(data_path):
 train_data = mx.io.NDArrayIter(data=nd.concatenate(img_list), batch_size=batch_size)
 
 
-def visualize(img_arr):
-    plt.imshow(((img_arr.asnumpy().transpose(1, 2, 0) + 1.0) * 127.5).astype(np.uint8))
-    plt.axis('off')
-
 for i in range(4):
     plt.subplot(1,4,i+1)
     visualize(img_list[i + 10][0])
 plt.show()
+
 
 
 # build the generator
@@ -119,6 +118,8 @@ with netD.name_scope():
     # state size. (ndf) x 4 x 4
     netD.add(nn.Conv2D(1, 4, 1, 0, use_bias=False))
 
+# 
+dcGan = DcGan(netG, netD, os.path.dirname(__file__) + '/params')
 
 # loss
 loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
@@ -126,6 +127,10 @@ loss = gluon.loss.SigmoidBinaryCrossEntropyLoss()
 # initialize the generator and the discriminator
 netG.initialize(mx.init.Normal(0.02), ctx=ctx)
 netD.initialize(mx.init.Normal(0.02), ctx=ctx)
+
+prev_epoch = dcGan.load_params(ctx)
+prev_epoch = 0 if prev_epoch < 0 else prev_epoch + 1
+
 
 # trainer for the generator and the discriminator
 trainerG = gluon.Trainer(netG.collect_params(), 'adam', {'learning_rate': lr, 'beta1': beta1})
@@ -147,7 +152,7 @@ metric = mx.metric.CustomMetric(facc)
 stamp =  datetime.now().strftime('%Y_%m_%d-%H_%M')
 logging.basicConfig(level=logging.DEBUG)
 
-for epoch in range(epochs):
+for epoch in range(prev_epoch, prev_epoch + epochs):
     tic = time.time()
     btic = time.time()
     train_data.reset()
@@ -196,31 +201,16 @@ for epoch in range(epochs):
         iter = iter + 1
         btic = time.time()
 
+    dcGan.save_params(epoch)
+
     name, acc = metric.get()
     metric.reset()
     # logging.info('\nbinary training acc at epoch %d: %s=%f' % (epoch, name, acc))
     # logging.info('time: %f' % (time.time() - tic))
 
-    # Visualize one generated image for each epoch
-    # fake_img = fake[0]
-    # visualize(fake_img)
-    # plt.show()
+    # Visualize images for several epoch
+    if epoch % 5 == 0:
+        show_random_images(netG, ctx)
 
-num_image = 8
-for i in range(num_image):
-    latent_z = mx.nd.random_normal(0, 1, shape=(1, latent_z_size, 1, 1), ctx=ctx)
-    img = netG(latent_z)
-    plt.subplot(2,4,i+1)
-    visualize(img[0])
-plt.show()
-
-
-num_image = 12
-latent_z = mx.nd.random_normal(0, 1, shape=(1, latent_z_size, 1, 1), ctx=ctx)
-step = 0.05
-for i in range(num_image):
-    img = netG(latent_z)
-    plt.subplot(3,4,i+1)
-    visualize(img[0])
-    latent_z += 0.05
-plt.show()
+show_random_images(netG, ctx)
+show_progress_images(netG, ctx)
